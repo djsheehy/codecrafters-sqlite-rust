@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use anyhow::{anyhow, bail, Error, Result};
 use nom::combinator::map_res;
 use nom::number::complete::{be_u16, be_u32, u8 as byte};
@@ -94,12 +95,12 @@ impl TryFrom<u8> for BtreePageKind {
 
 #[derive(Debug)]
 pub struct BtreeHeader {
-    kind: BtreePageKind,
-    first_freeblock: u16,
-    cell_count: u16,
-    cell_contents: u16,
-    fragmented_free_bytes: u8,
-    rightmost_pointer: Option<u32>,
+    pub kind: BtreePageKind,
+    pub first_freeblock: u16,
+    pub cell_count: u16,
+    pub cell_contents: u16,
+    pub fragmented_free_bytes: u8,
+    pub rightmost_pointer: Option<u32>,
 }
 
 macro_rules! parse_steps {

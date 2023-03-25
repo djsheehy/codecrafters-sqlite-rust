@@ -18,23 +18,12 @@ fn main() -> Result<()> {
     let command = &args[2];
     match command.as_str() {
         ".dbinfo" => {
-            // let mut file = File::open(&args[1])?;
-            // let mut header = [0; 100];
-            // file.read_exact(&mut header)?;
-            let file = SqliteFile::new(File::open(&args[1])?)?;
-
-            // The page size is stored at the 16th byte offset, using 2 bytes in big-endian order
-            #[allow(unused_variables)]
-            let page_size = file.page_size();
-
-            // Uncomment this block to pass the first stage
-            println!("database page size: {}", page_size);
-        }
-        ".pageinfo" => {
             let mut file = SqliteFile::new(File::open(&args[1])?)?;
-            let pg = file.get_page(0)?;
-            let header = pg.get_header()?;
-            println!("{:?}", header);
+            let page_size = file.page_size();
+            println!("database page size: {}", page_size);
+            let page = file.get_page(0)?;
+            let header = page.get_header()?;
+            println!("number of tables: {}", header.cell_count);
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }
