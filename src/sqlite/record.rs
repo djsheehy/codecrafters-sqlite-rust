@@ -96,7 +96,7 @@ impl<'a> RecordCode {
                     x = (x << 8) | (*b as u64);
                 }
                 if n[0] >= 0x80 {
-                    x |= 0xff_00_00_00_00_00_00_00;
+                    x |= 0xff_ff_00_00_00_00_00_00;
                 }
                 Ok((input, Record::Integer(x as i64)))
             }
