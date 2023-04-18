@@ -33,17 +33,13 @@ impl<'a> std::fmt::Debug for Payload<'a> {
 #[derive(Debug)]
 /// Represents a cell in a table or index.
 pub enum Cell<'a> {
-    TableLeaf {
-        rowid: u64,
-        payload: Payload<'a>,
-    },
-    TableInterior {
-        left_child_page: u32,
-        rowid: u64,
-    },
-    IndexLeaf {
-        payload: Payload<'a>,
-    },
+    /// Table Leaf cell
+    TableLeaf { rowid: u64, payload: Payload<'a> },
+    /// Table Interior cell
+    TableInterior { left_child_page: u32, rowid: u64 },
+    /// Index Leaf cell
+    IndexLeaf { payload: Payload<'a> },
+    /// Index Interior cell
     IndexInterior {
         left_child_page: u32,
         payload: Payload<'a>,
@@ -51,6 +47,7 @@ pub enum Cell<'a> {
 }
 
 impl<'a> BtreeHeader {
+    /// Parse a cell based on the type of Btree.
     pub fn parse_cell(&'a self, input: &'a [u8]) -> IResult<&[u8], Cell<'a>> {
         match self.kind {
             PageKind::TableLeaf => {

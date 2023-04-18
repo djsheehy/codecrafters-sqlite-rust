@@ -9,13 +9,18 @@ use nom::{
     IResult,
 };
 
+/// Record from an SQLite database.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum Record<'a> {
+    /// `NULL` value
     Null,
+    /// Integer value
     Integer(i64),
+    /// Floating point value
     Float(f64),
+    /// `BLOB` value (binary data)
     Blob(&'a [u8]),
+    /// `TEXT` value (unicode text)
     String(Cow<'a, str>),
 }
 
@@ -122,6 +127,7 @@ impl<'a> RecordCode {
     }
 }
 
+/// Parse a [Cell][crate::cells::Cell] payload into a series of [Record]s.
 pub fn parse_payload<'a>(input: &'a [u8]) -> IResult<&'a [u8], Vec<Record<'a>>> {
     let (_, header_size) = varint(input)?;
     let header = &input[..header_size as usize];

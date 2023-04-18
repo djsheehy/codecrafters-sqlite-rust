@@ -13,12 +13,14 @@ pub(crate) mod cells;
 pub(crate) mod record;
 pub(crate) mod varint;
 
+/// An SQLite database file. Top level thingy that gets everything else.
 pub struct SqliteFile {
     file: File,
     page_size: u16,
 }
 
 impl SqliteFile {
+    /// Create an SQLite file from a regular [File][std::fs::File].
     pub fn new(mut file: File) -> Result<Self> {
         file.seek(SeekFrom::Start(16))?;
         let page_size = {
@@ -30,10 +32,12 @@ impl SqliteFile {
         Ok(Self { file, page_size })
     }
 
+    /// Get the page size.
     pub fn page_size(&self) -> u16 {
         self.page_size
     }
 
+    /// Get a page. `page_id` starts at 1.
     pub fn get_page(&mut self, page_id: u64) -> Result<Page> {
         let mut data = vec![0u8; self.page_size as usize];
         self.file.seek(SeekFrom::Current(
@@ -63,6 +67,7 @@ impl Page {
     }
 }
 
+/// B-Tree page type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PageKind {
     IndexInterior,

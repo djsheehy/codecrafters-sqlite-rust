@@ -1,5 +1,6 @@
 use nom::{bytes::complete::take_while_m_n, number::complete::u8, IResult};
 
+/// Parse a variable sized integer (varint) based on SQLite's format.
 pub fn varint(input: &[u8]) -> IResult<&[u8], u64> {
     // get bytes with high bit set
     let (input, hibytes) = take_while_m_n(0, 8, |b| b >= 0x80)(input)?;
