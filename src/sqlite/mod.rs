@@ -187,3 +187,68 @@ fn parse_btree_header(input: &[u8]) -> IResult<&[u8], BtreeHeader> {
 pub fn cell_pointers(input: &[u8], n: usize) -> IResult<&[u8], Vec<u16>> {
     count(be_u16, n)(input)
 }
+
+#[derive(Debug, PartialEq)]
+pub struct Select {
+    pub columns: Vec<String>,
+    pub table: String,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Create {
+    pub name: String,
+    pub columns: Vec<String>,
+}
+
+peg::parser! {
+    grammar sql() for str {
+        rule _ -> () = $([' '|'\n'|'\t']+) { () }
+
+        rule __ -> () = $([' '|'\n'|'\t']*) { () }
+
+        rule word() -> String
+            = w:$(['a'..='z'|'A'..='Z']+) { w.to_owned() }
+
+        rule names() -> Vec<String>
+            = n:(word() ** ("," _)) { n.to_owned() }
+
+        pub rule select() -> Select
+            = "select" _ cols:names() _ "from" _ table:word() {
+                Select {columns: cols, table }
+        }
+
+        rule column() -> String
+            = col:(word() ++ _) { col[0].to_owned() }
+
+        pub rule create() -> Create
+            = "create" _ "table" _ name:word() __ "(" __ columns:(column() ++ ("," __)) __ ");" {
+                Create { name, columns }
+        }
+    }
+}
+
+#[test]
+fn test_sql_select() {
+    let sel = sql::select("select asdf from stuff").unwrap();
+    assert_eq!(sel.columns, vec!["asdf".to_owned()]);
+    assert_eq!(sel.table, "stuff".to_owned());
+    let sel = sql::select("select apple, banana, camel from stuff").unwrap();
+    assert_eq!(sel.columns, vec!["apple", "banana", "camel"]);
+    assert_eq!(sel.table, "stuff");
+}
+
+#[test]
+fn test_sql_create() {
+    let table = sql::create(
+        &"CREATE TABLE oranges
+    (
+            id integer primary key autoincrement,
+            name text,
+            description text
+    );"
+        .to_ascii_lowercase(),
+    )
+    .unwrap();
+    assert_eq!(table.columns, vec!["id", "name", "description"]);
+    assert_eq!(table.name, "oranges");
+}
