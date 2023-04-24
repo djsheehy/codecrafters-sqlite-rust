@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Display};
+use std::fmt::Display;
 
 use crate::varint::varint;
 use nom::{
@@ -10,8 +10,8 @@ use nom::{
 };
 
 /// Record from an SQLite database.
-#[derive(Debug)]
-pub enum Record<'a> {
+#[derive(Debug, Clone)]
+pub enum Value {
     /// `NULL` value
     Null,
     /// Integer value
@@ -19,22 +19,42 @@ pub enum Record<'a> {
     /// Floating point value
     Float(f64),
     /// `BLOB` value (binary data)
-    Blob(&'a [u8]),
+    Blob(Vec<u8>),
     /// `TEXT` value (unicode text)
-    String(Cow<'a, str>),
+    String(String),
 }
 
-impl<'a> Display for Record<'a> {
+impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Record::Null => write!(f, "NULL"),
-            Record::Integer(n) => write!(f, "{}", *n),
-            Record::Float(n) => write!(f, "{}", *n),
-            Record::Blob(b) => write!(f, "{:?}", b),
-            Record::String(s) => write!(f, "{}", s),
+            Value::Null => write!(f, "NULL"),
+            Value::Integer(n) => write!(f, "{}", *n),
+            Value::Float(n) => write!(f, "{}", *n),
+            Value::Blob(b) => write!(f, "{:?}", b),
+            Value::String(s) => write!(f, "{}", s),
         }
     }
 }
+
+macro_rules! impl_from_value {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl<'a> From<Value> for Option<$t> {
+                fn from(v: Value) -> Option<$t> {
+                    match v {
+                        Value::Null => None,
+                        Value::Integer(n) => Some(n as $t),
+                        Value::Float(n) => Some(n as $t),
+                        Value::Blob(_) => None,
+                        Value::String(s) => s.parse::<$t>().ok()
+                    }
+                }
+            }
+        )*
+    }
+}
+
+impl_from_value!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, usize);
 
 #[derive(Clone, Copy)]
 enum RecordCode {
@@ -74,25 +94,25 @@ impl From<u64> for RecordCode {
 }
 
 impl<'a> RecordCode {
-    fn parse(self, input: &'a [u8]) -> IResult<&'a [u8], Record> {
+    fn parse(self, input: &'a [u8]) -> IResult<&'a [u8], Value> {
         match self {
-            RecordCode::Null => Ok((input, Record::Null)),
+            RecordCode::Null => Ok((input, Value::Null)),
             RecordCode::I8 => {
                 let (input, n) = i8(input)?;
-                Ok((input, Record::Integer(n.into())))
+                Ok((input, Value::Integer(n.into())))
             }
 
             RecordCode::I16 => {
                 let (input, n) = be_i16(input)?;
-                Ok((input, Record::Integer(n.into())))
+                Ok((input, Value::Integer(n.into())))
             }
             RecordCode::I24 => {
                 let (input, n) = be_i24(input)?;
-                Ok((input, Record::Integer(n.into())))
+                Ok((input, Value::Integer(n.into())))
             }
             RecordCode::I32 => {
                 let (input, n) = be_i32(input)?;
-                Ok((input, Record::Integer(n.into())))
+                Ok((input, Value::Integer(n.into())))
             }
             RecordCode::I48 => {
                 let (input, n) = take(6 as usize)(input)?;
@@ -103,32 +123,32 @@ impl<'a> RecordCode {
                 if n[0] >= 0x80 {
                     x |= 0xff_ff_00_00_00_00_00_00;
                 }
-                Ok((input, Record::Integer(x as i64)))
+                Ok((input, Value::Integer(x as i64)))
             }
             RecordCode::I64 => {
                 let (input, n) = be_i64(input)?;
-                Ok((input, Record::Integer(n.into())))
+                Ok((input, Value::Integer(n.into())))
             }
             RecordCode::F64 => {
                 let (input, n) = be_f64(input)?;
-                Ok((input, Record::Float(n)))
+                Ok((input, Value::Float(n)))
             }
-            RecordCode::Zero => Ok((input, Record::Integer(0))),
-            RecordCode::One => Ok((input, Record::Integer(1))),
+            RecordCode::Zero => Ok((input, Value::Integer(0))),
+            RecordCode::One => Ok((input, Value::Integer(1))),
             RecordCode::Blob(n) => {
                 let (input, b) = take(n)(input)?;
-                Ok((input, Record::Blob(b)))
+                Ok((input, Value::Blob(b.to_vec())))
             }
             RecordCode::String(n) => {
                 let (input, s) = take(n)(input)?;
-                Ok((input, Record::String(String::from_utf8_lossy(s))))
+                Ok((input, Value::String(String::from_utf8_lossy(s).to_string())))
             }
         }
     }
 }
 
 /// Parse a [Cell][crate::cells::Cell] payload into a series of [Record]s.
-pub fn parse_payload<'a>(input: &'a [u8]) -> IResult<&'a [u8], Vec<Record<'a>>> {
+pub fn parse_payload<'a>(input: &'a [u8]) -> IResult<&'a [u8], Vec<Value>> {
     let (_, header_size) = varint(input)?;
     let header = &input[..header_size as usize];
     let (header, _) = varint(header)?;

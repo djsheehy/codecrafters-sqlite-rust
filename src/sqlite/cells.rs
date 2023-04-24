@@ -1,4 +1,4 @@
-use crate::record::{parse_payload, Record};
+use crate::record::{parse_payload, Value};
 use crate::varint::varint;
 use crate::BtreeHeader;
 use crate::PageKind;
@@ -16,7 +16,7 @@ pub struct Payload<'a> {
 }
 
 impl<'a> Payload<'a> {
-    pub fn parse(&self) -> IResult<&'a [u8], Vec<Record>> {
+    pub fn parse(&'a self) -> IResult<&'a [u8], Vec<Value>> {
         parse_payload(self.payload)
     }
 }
@@ -44,6 +44,17 @@ pub enum Cell<'a> {
         left_child_page: u32,
         payload: Payload<'a>,
     },
+}
+
+impl<'a> Cell<'a> {
+    pub fn get_payload(&self) -> Option<&Payload<'a>> {
+        match self {
+            Cell::TableLeaf { ref payload, .. } => Some(payload),
+            Cell::TableInterior { .. } => None,
+            Cell::IndexLeaf { ref payload, .. } => Some(payload),
+            Cell::IndexInterior { ref payload, .. } => Some(payload),
+        }
+    }
 }
 
 impl<'a> BtreeHeader {

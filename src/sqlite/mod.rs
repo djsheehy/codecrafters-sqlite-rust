@@ -1,13 +1,16 @@
 use anyhow::{anyhow, bail, Error, Result};
+use nom::IResult;
 use nom::{
     combinator::map_res,
     multi::count,
     number::complete::{be_u16, be_u32, u8},
     sequence::tuple,
 };
-use nom::{Finish, IResult};
-use std::fs::File;
+use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
+use std::{fs::File, ops::Deref};
+
+use self::cells::Cell;
 
 pub(crate) mod cells;
 pub(crate) mod record;
@@ -15,7 +18,7 @@ pub(crate) mod varint;
 
 /// An SQLite database file. Top level thingy that gets everything else.
 pub struct SqliteFile {
-    file: File,
+    file: RefCell<File>,
     page_size: u16,
 }
 
@@ -29,7 +32,10 @@ impl SqliteFile {
             u16::from_be_bytes(buf)
         };
         file.seek(SeekFrom::Start(0))?;
-        Ok(Self { file, page_size })
+        Ok(Self {
+            file: RefCell::new(file),
+            page_size,
+        })
     }
 
     /// Get the page size.
@@ -38,32 +44,68 @@ impl SqliteFile {
     }
 
     /// Get a page. `page_id` starts at 1.
-    pub fn get_page(&mut self, page_id: u64) -> Result<Page> {
+    pub fn get_page(&self, page_id: u64) -> Result<Page> {
         let mut data = vec![0u8; self.page_size as usize];
-        self.file.seek(SeekFrom::Current(
-            (page_id - 1) as i64 * self.page_size as i64,
+        self.file.borrow_mut().seek(SeekFrom::Start(
+            ((page_id - 1) * self.page_size as u64) as u64,
         ))?;
-        self.file.read_exact(&mut data[..])?;
-        Ok(Page { page_id, data })
+        self.file.borrow_mut().read_exact(&mut data[..])?;
+        let hdata = if page_id == 1 {
+            &data[100..]
+        } else {
+            &data[..]
+        };
+        let (_, header) =
+            parse_btree_header(hdata).map_err(|e| anyhow!("parse header: {:?}", e))?;
+        Ok(Page {
+            page_id,
+            data,
+            header,
+        })
     }
 }
 
 pub struct Page {
     pub page_id: u64,
     pub data: Vec<u8>,
+    pub header: BtreeHeader,
+}
+
+pub struct CellIter<'p> {
+    page: &'p Page,
+    ptr_array: &'p [u8],
+}
+
+impl<'p> Iterator for CellIter<'p> {
+    type Item = Cell<'p>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (input, ptr) = be_u16::<&[u8], ()>(self.ptr_array).ok()?;
+        let data = &self.page[ptr as usize..];
+        let (_, cell) = self.page.header.parse_cell(data).ok()?;
+        self.ptr_array = input;
+        Some(cell)
+    }
 }
 
 impl Page {
-    pub fn get_header(&self) -> Result<BtreeHeader> {
-        let data = if self.page_id == 1 {
-            &self.data[100..]
-        } else {
-            &self.data[..]
-        };
-        let (_, header) = parse_btree_header(data)
-            .finish()
-            .map_err(|e| anyhow!("get_header error: {:?}", e))?;
-        Ok(header)
+    pub fn cells<'p>(&'p self) -> CellIter<'p> {
+        // start of cell pointer array
+        let start = if self.page_id == 1 { 108 } else { 8 };
+        let count = self.header.cell_count as usize;
+        let ptr_array = &self[start..count * 2 + start];
+        CellIter {
+            page: self,
+            ptr_array,
+        }
+    }
+}
+
+impl Deref for Page {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
     }
 }
 

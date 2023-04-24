@@ -1,5 +1,4 @@
 mod sqlite;
-
 use sqlite::*;
 
 use anyhow::{bail, Result};
@@ -16,25 +15,25 @@ fn main() -> Result<()> {
 
     // Parse command and act accordingly
     let command = &args[2];
+
     match command.as_str() {
         ".dbinfo" => {
-            let mut file = SqliteFile::new(File::open(&args[1])?)?;
+            let file = SqliteFile::new(File::open(&args[1])?)?;
+            let schema = file.get_page(1)?;
             let page_size = file.page_size();
             println!("database page size: {}", page_size);
-            let page = file.get_page(1)?;
-            let header = page.get_header()?;
-            println!("number of tables: {}", header.cell_count);
+            println!("number of tables: {}", schema.header.cell_count);
         }
         ".tables" => {
-            let mut file = SqliteFile::new(File::open(&args[1])?)?;
-            let page = file.get_page(1)?;
-            let header = page.get_header()?;
-            let input = &page.data[108..];
-            let (_, pointers) = cell_pointers(input, header.cell_count as usize)
+            let file = SqliteFile::new(File::open(&args[1])?)?;
+            let schema = file.get_page(1)?;
+            let input = &schema[108..];
+            let (_, pointers) = cell_pointers(input, schema.header.cell_count as usize)
                 .expect("tried to read cell pointers");
             let cells = pointers.iter().map(|ptr| {
-                let (_, cell) = header
-                    .parse_cell(&page.data[*ptr as usize..])
+                let (_, cell) = schema
+                    .header
+                    .parse_cell(&schema.data[*ptr as usize..])
                     .expect("parse cell");
                 cell
             });
@@ -48,7 +47,24 @@ fn main() -> Result<()> {
                 }
             }
         }
-        _ => bail!("Missing or invalid command passed: {}", command),
+        query => {
+            let file = SqliteFile::new(File::open(&args[1])?)?;
+            let schema = file.get_page(1)?;
+            let name = query.split(' ').last().unwrap();
+            let mut rows = schema.cells().map(|c| {
+                c.get_payload()
+                    .expect("get_payload")
+                    .parse()
+                    .expect("parse_payload")
+                    .1
+            });
+            let table = rows
+                .find(|row| row[1].to_string() == name)
+                .expect("table not found");
+            let rootpage: Option<u64> = Option::from(table[3].clone());
+            let page = file.get_page(rootpage.expect("value is not an integer"))?;
+            println!("{}", page.header.cell_count);
+        }
     }
 
     Ok(())
