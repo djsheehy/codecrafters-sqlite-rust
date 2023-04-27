@@ -61,13 +61,18 @@ fn main() -> Result<()> {
             let selected = create.select(&stmt);
             let pgno = NonZeroU64::new(table.rootpage).unwrap();
             let page = file.get_page(pgno)?;
-            for cell in page.cells() {
-                let row: Vec<Value> = cell.try_into()?;
-                let mut result = vec![];
-                for s in selected.iter() {
-                    result.push(row[*s].to_string());
+            match &stmt.columns {
+                SelectColumns::Count => println!("{}", page.header.cell_count),
+                _ => {
+                    for cell in page.cells() {
+                        let row: Vec<Value> = cell.try_into()?;
+                        let mut result = vec![];
+                        for s in selected.iter() {
+                            result.push(row[*s].to_string());
+                        }
+                        println!("{}", result.join("|"));
+                    }
                 }
-                println!("{}", result.join("|"));
             }
         }
     }

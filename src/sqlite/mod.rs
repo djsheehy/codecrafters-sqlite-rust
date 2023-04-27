@@ -272,7 +272,13 @@ pub fn cell_pointers(input: &[u8], n: usize) -> IResult<&[u8], Vec<u16>> {
 #[derive(Debug, PartialEq)]
 pub struct Select {
     pub name: String,
-    pub columns: Vec<String>,
+    pub columns: SelectColumns,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SelectColumns {
+    Columns(Vec<String>),
+    Count,
 }
 
 /// Compiled `CREATE TABLE` statement
@@ -286,10 +292,13 @@ pub struct CreateTable {
 impl CreateTable {
     /// Get index of corresponding columns in a [`Select`]
     pub fn select(&self, sel: &Select) -> Vec<usize> {
-        sel.columns
-            .iter()
-            .flat_map(|sc| self.columns.iter().position(|cc| cc == sc))
-            .collect()
+        match &sel.columns {
+            SelectColumns::Columns(cols) => cols
+                .iter()
+                .flat_map(|sc| self.columns.iter().position(|cc| cc == sc))
+                .collect(),
+            SelectColumns::Count => Vec::new(),
+        }
     }
 }
 
@@ -305,7 +314,7 @@ impl FromStr for Select {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let rx = RegexBuilder::new("SELECT ([A-Za-z, ]+) FROM ([A-Za-z]+)")
+        let rx = RegexBuilder::new(r"SELECT ([A-Za-z, \(\)\*]+) FROM ([A-Za-z]+)")
             .case_insensitive(true)
             .build()?;
         let caps = rx
@@ -313,8 +322,17 @@ impl FromStr for Select {
             .ok_or_else(|| anyhow!("failed to parse SELECT: {:?}", s))?;
         let name = caps.get(2).unwrap().as_str().to_owned();
         let columns = caps.get(1).unwrap();
+        if columns.as_str().eq_ignore_ascii_case("count(*)") {
+            return Ok(Select {
+                name,
+                columns: SelectColumns::Count,
+            });
+        }
         let columns: Vec<String> = columns.as_str().split(", ").map(String::from).collect();
-        Ok(Select { name, columns })
+        Ok(Select {
+            name,
+            columns: SelectColumns::Columns(columns),
+        })
     }
 }
 
@@ -379,7 +397,7 @@ fn sql_select() -> Result<()> {
     let sel: Select = sql.parse()?;
     let expected = Select {
         name: "apples".to_owned(),
-        columns: vec!["name".to_owned()],
+        columns: SelectColumns::Columns(vec!["name".to_owned()]),
     };
     assert_eq!(sel, expected);
     Ok(())
@@ -391,7 +409,19 @@ fn sql_multi_select() -> Result<()> {
     let sel: Select = sql.parse()?;
     let expected = Select {
         name: "apples".to_owned(),
-        columns: vec!["name".to_owned(), "description".to_owned()],
+        columns: SelectColumns::Columns(vec!["name".to_owned(), "description".to_owned()]),
+    };
+    assert_eq!(sel, expected);
+    Ok(())
+}
+
+#[test]
+fn sql_select_count() -> Result<()> {
+    let sql = "SELECT COUNT(*) FROM apples";
+    let sel: Select = sql.parse()?;
+    let expected = Select {
+        name: "apples".to_owned(),
+        columns: SelectColumns::Count,
     };
     assert_eq!(sel, expected);
     Ok(())
