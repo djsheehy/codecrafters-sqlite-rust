@@ -39,14 +39,14 @@ impl Display for Value {
 macro_rules! impl_from_value {
     ($($t:ty),* $(,)?) => {
         $(
-            impl<'a> From<Value> for Option<$t> {
-                fn from(v: Value) -> Option<$t> {
+            impl From<Value> for $t {
+                fn from(v: Value) -> $t {
                     match v {
-                        Value::Null => None,
-                        Value::Integer(n) => Some(n as $t),
-                        Value::Float(n) => Some(n as $t),
-                        Value::Blob(_) => None,
-                        Value::String(s) => s.parse::<$t>().ok()
+                        Value::Null => Default::default(),
+                        Value::Integer(n) => n as $t,
+                        Value::Float(n) => n as $t,
+                        Value::Blob(_) => Default::default(),
+                        Value::String(s) => s.parse::<$t>().unwrap_or_default()
                     }
                 }
             }
@@ -147,7 +147,7 @@ impl<'a> RecordCode {
     }
 }
 
-/// Parse a [Cell][crate::cells::Cell] payload into a series of [Record]s.
+/// Parse a [`Cell`][crate::cells::Cell] payload into a series of [`Value`]s.
 pub fn parse_payload<'a>(input: &'a [u8]) -> IResult<&'a [u8], Vec<Value>> {
     let (_, header_size) = varint(input)?;
     let header = &input[..header_size as usize];

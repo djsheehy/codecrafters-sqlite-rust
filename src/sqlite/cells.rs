@@ -57,6 +57,20 @@ impl<'a> Cell<'a> {
     }
 }
 
+impl<'a> TryFrom<Cell<'a>> for Vec<Value> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Cell<'a>) -> Result<Self, Self::Error> {
+        let pl = value
+            .get_payload()
+            .ok_or_else(|| anyhow::anyhow!("Table Interior cells have no payload"))?;
+        let (_, row) = pl
+            .parse()
+            .map_err(|e| anyhow::anyhow!("parse payload error: {}", e.to_string()))?;
+        Ok(row)
+    }
+}
+
 impl<'a> BtreeHeader {
     /// Parse a cell based on the type of Btree.
     pub fn parse_cell(&'a self, input: &'a [u8]) -> IResult<&[u8], Cell<'a>> {

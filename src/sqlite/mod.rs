@@ -6,8 +6,11 @@ use nom::{
     number::complete::{be_u16, be_u32, u8},
     sequence::tuple,
 };
+use regex::RegexBuilder;
 use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
+use std::num::NonZeroU64;
+use std::str::FromStr;
 use std::{fs::File, ops::Deref};
 
 use self::cells::Cell;
@@ -20,6 +23,7 @@ pub(crate) mod varint;
 pub struct SqliteFile {
     file: RefCell<File>,
     page_size: u16,
+    page1: Page,
 }
 
 impl SqliteFile {
@@ -32,9 +36,18 @@ impl SqliteFile {
             u16::from_be_bytes(buf)
         };
         file.seek(SeekFrom::Start(0))?;
+        let mut data = vec![0u8; page_size as usize];
+        file.by_ref().read_exact(&mut data)?;
+        let (_, header) = parse_btree_header(&data[100..]).map_err(|_| anyhow!("parse header"))?;
+
         Ok(Self {
             file: RefCell::new(file),
             page_size,
+            page1: Page {
+                page_id: 1,
+                data,
+                header,
+            },
         })
     }
 
@@ -44,7 +57,8 @@ impl SqliteFile {
     }
 
     /// Get a page. `page_id` starts at 1.
-    pub fn get_page(&self, page_id: u64) -> Result<Page> {
+    pub fn get_page(&self, page_id: NonZeroU64) -> Result<Page> {
+        let page_id = page_id.get();
         let mut data = vec![0u8; self.page_size as usize];
         self.file.borrow_mut().seek(SeekFrom::Start(
             ((page_id - 1) * self.page_size as u64) as u64,
@@ -63,6 +77,54 @@ impl SqliteFile {
             header,
         })
     }
+
+    pub fn get_schema(&self) -> Vec<Schema> {
+        self.page1
+            .cells()
+            .map(|c| {
+                let row = c.get_payload().unwrap().parse().unwrap().1;
+                Schema {
+                    stype: row[0].to_string().parse().unwrap(),
+                    name: row[1].to_string(),
+                    table_name: row[2].to_string(),
+                    rootpage: u64::from(row[3].clone()),
+                    sql: row[4].to_string(),
+                }
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SchemaType {
+    Table,
+    Index,
+    View,
+    Trigger,
+}
+
+impl FromStr for SchemaType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        use SchemaType::*;
+        match s {
+            "table" => Ok(Table),
+            "index" => Ok(Index),
+            "view" => Ok(View),
+            "trigger" => Ok(Trigger),
+            _ => bail!("schema type must be table, index, view or trigger"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Schema {
+    pub stype: SchemaType,
+    pub name: String,
+    pub table_name: String,
+    pub rootpage: u64,
+    pub sql: String,
 }
 
 pub struct Page {
@@ -71,6 +133,7 @@ pub struct Page {
     pub header: BtreeHeader,
 }
 
+/// Iterates over the cells in a page.
 pub struct CellIter<'p> {
     page: &'p Page,
     ptr_array: &'p [u8],
@@ -90,8 +153,17 @@ impl<'p> Iterator for CellIter<'p> {
 
 impl Page {
     pub fn cells<'p>(&'p self) -> CellIter<'p> {
-        // start of cell pointer array
-        let start = if self.page_id == 1 { 108 } else { 8 };
+        // start of cell pointer array.
+        // First page contains 100 byte file header.
+        // Page header is 8 bytes if a leaf page or 12 bytes if interior.
+        // I assume the first page is a leaf page, which is usually true unless you have a crapload of tables.
+        let start = if self.page_id == 1 {
+            108
+        } else if self.header.kind.is_interior() {
+            12
+        } else {
+            8
+        };
         let count = self.header.cell_count as usize;
         let ptr_array = &self[start..count * 2 + start];
         CellIter {
@@ -142,12 +214,20 @@ impl TryFrom<u8> for PageKind {
     }
 }
 
+/// Header of a B-tree page.
 pub struct BtreeHeader {
+    /// Page type
     pub kind: PageKind,
+    /// Offset to first freeblock in the page, or 0 if none.
     pub first_freeblock: u16,
+    /// Number of cells on the page.
     pub cell_count: u16,
+    /// Start of cell content area
     pub cell_contents: u16,
+    /// Number of fragmented free bytes.
     pub fragmented_free_bytes: u8,
+    /// Child page whose keys are greater than the keys on this page.
+    /// Only exists if it's an internal page.
     pub rightmost_pointer: Option<u32>,
 }
 
@@ -188,67 +268,131 @@ pub fn cell_pointers(input: &[u8], n: usize) -> IResult<&[u8], Vec<u16>> {
     count(be_u16, n)(input)
 }
 
+/// Compiled `SELECT` statement
 #[derive(Debug, PartialEq)]
 pub struct Select {
-    pub columns: Vec<String>,
-    pub table: String,
-}
-
-#[derive(Debug, PartialEq)]
-pub struct Create {
     pub name: String,
     pub columns: Vec<String>,
 }
 
-peg::parser! {
-    grammar sql() for str {
-        rule _ -> () = $([' '|'\n'|'\t']+) { () }
+/// Compiled `CREATE TABLE` statement
+#[derive(Debug, PartialEq)]
+pub struct CreateTable {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub key: Option<String>,
+}
 
-        rule __ -> () = $([' '|'\n'|'\t']*) { () }
+impl CreateTable {
+    /// Get index of corresponding columns in a [`Select`]
+    pub fn select(&self, sel: &Select) -> Vec<usize> {
+        sel.columns
+            .iter()
+            .flat_map(|sc| self.columns.iter().position(|cc| cc == sc))
+            .collect()
+    }
+}
 
-        rule word() -> String
-            = w:$(['a'..='z'|'A'..='Z']+) { w.to_owned() }
+impl TryFrom<&Schema> for CreateTable {
+    type Error = Error;
 
-        rule names() -> Vec<String>
-            = n:(word() ** ("," _)) { n.to_owned() }
+    fn try_from(value: &Schema) -> std::result::Result<Self, Self::Error> {
+        value.sql.parse()
+    }
+}
 
-        pub rule select() -> Select
-            = "select" _ cols:names() _ "from" _ table:word() {
-                Select {columns: cols, table }
+impl FromStr for Select {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let rx = RegexBuilder::new("SELECT ([A-Za-z, ]+) FROM ([A-Za-z]+)")
+            .case_insensitive(true)
+            .build()?;
+        let caps = rx
+            .captures(s)
+            .ok_or_else(|| anyhow!("failed to parse SELECT: {:?}", s))?;
+        let name = caps.get(2).unwrap().as_str().to_owned();
+        let columns = caps.get(1).unwrap();
+        let columns: Vec<String> = columns.as_str().split(", ").map(String::from).collect();
+        Ok(Select { name, columns })
+    }
+}
+
+impl FromStr for CreateTable {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let rx = RegexBuilder::new(r"create\s+table\s+(?P<name>\w+)\s*\(\s*(?P<columns>[^\)]*)\)")
+            .case_insensitive(true)
+            .build()?;
+        let caps = rx
+            .captures(s)
+            .ok_or_else(|| anyhow!("failed to parse CREATE TABLE"))?;
+        let name = caps.name("name").unwrap().as_str().to_owned();
+        let columns: Vec<_> = caps
+            .name("columns")
+            .unwrap()
+            .as_str()
+            .split(",")
+            .map(|s| s.trim())
+            .collect();
+        let colnames: Vec<_> = columns
+            .iter()
+            .map(|s| s.split(" ").next().unwrap().to_string())
+            .collect();
+        let mut table = CreateTable {
+            name,
+            columns: colnames,
+            key: None,
+        };
+        for (i, col) in columns.iter().enumerate() {
+            if col.contains("primary key") {
+                table.key = Some(table.columns[i].clone());
+                break;
+            }
         }
-
-        rule column() -> String
-            = col:(word() ++ _) { col[0].to_owned() }
-
-        pub rule create() -> Create
-            = "create" _ "table" _ name:word() __ "(" __ columns:(column() ++ ("," __)) __ ");" {
-                Create { name, columns }
-        }
+        Ok(table)
     }
 }
 
 #[test]
-fn test_sql_select() {
-    let sel = sql::select("select asdf from stuff").unwrap();
-    assert_eq!(sel.columns, vec!["asdf".to_owned()]);
-    assert_eq!(sel.table, "stuff".to_owned());
-    let sel = sql::select("select apple, banana, camel from stuff").unwrap();
-    assert_eq!(sel.columns, vec!["apple", "banana", "camel"]);
-    assert_eq!(sel.table, "stuff");
-}
-
-#[test]
-fn test_sql_create() {
-    let table = sql::create(
-        &"CREATE TABLE oranges
+fn sql_create_table() -> Result<()> {
+    let sql = "CREATE TABLE apples
     (
             id integer primary key autoincrement,
             name text,
-            description text
-    );"
-        .to_ascii_lowercase(),
-    )
-    .unwrap();
-    assert_eq!(table.columns, vec!["id", "name", "description"]);
-    assert_eq!(table.name, "oranges");
+            color text
+    )";
+    let table: CreateTable = sql.parse()?;
+    let expected = CreateTable {
+        name: "apples".to_string(),
+        columns: vec!["id".to_owned(), "name".to_owned(), "color".to_owned()],
+        key: Some("id".to_owned()),
+    };
+    assert_eq!(table, expected);
+    Ok(())
+}
+
+#[test]
+fn sql_select() -> Result<()> {
+    let sql = "SELECT name FROM apples";
+    let sel: Select = sql.parse()?;
+    let expected = Select {
+        name: "apples".to_owned(),
+        columns: vec!["name".to_owned()],
+    };
+    assert_eq!(sel, expected);
+    Ok(())
+}
+
+#[test]
+fn sql_multi_select() -> Result<()> {
+    let sql = "SELECT name, description FROM apples";
+    let sel: Select = sql.parse()?;
+    let expected = Select {
+        name: "apples".to_owned(),
+        columns: vec!["name".to_owned(), "description".to_owned()],
+    };
+    assert_eq!(sel, expected);
+    Ok(())
 }
